@@ -449,6 +449,86 @@ int smhc_write_blocks(unsigned int sector, unsigned int count, void *buf) {
     return 0;
 }
 
+#if 0
+/* Optimized CPU Write Burst */
+int smhc_write_blocks(unsigned int sector, unsigned int count, void *buf) {
+    unsigned int *buf_u32 = (unsigned int *)buf;
+    unsigned int total_words = 128 * count;
+    unsigned int words_written = 0;
+
+    /* 1. Address Calculation (High Cap Support) */
+    /* If card_is_high_capacity (SDHC/SDXC), use Sector Index directly. */
+    /* If SDSC (Standard), use Byte Address (Sector * 512). */
+    unsigned int arg = sector;
+    if (card_is_high_capacity == 0) {
+        arg = sector * 512;
+    }
+
+    /* 2. Prepare Controller (FIFO Reset & CPU Mode) */
+    /* Critical: Reset FIFO before changing direction/operation */
+    SMHC0->CTRL |= SMHC_CTRL_FIFO_RST;
+    while(SMHC0->CTRL & SMHC_CTRL_FIFO_RST);
+
+    unsigned int ctrl = SMHC0->CTRL;
+    ctrl |= SMHC_CTRL_FIFO_AC_MOD; /* Set AHB/CPU Mode */
+    ctrl &= ~SMHC_CTRL_DMA_ENB;    /* Disable DMA */
+    SMHC0->CTRL = ctrl;
+
+    /* 3. Send Command */
+    SMHC0->BLKSIZ = 512;
+    SMHC0->BYTCNT = count * 512;
+    
+    unsigned int cmd_idx = (count > 1) ? 25 : 24;
+    unsigned int flags = SMHC_CMD_RESP_EXP | SMHC_CMD_CHECK_CRC | SMHC_CMD_DATA_EXP | SMHC_CMD_WRITE;
+
+    if (smhc_send_cmd(cmd_idx, arg, flags) != 0) return -1;
+
+    /* 4. Burst Write Loop */
+    while (words_written < total_words) {
+        
+        /* Check Status Register */
+        /* Bit 3 = FIFO Full. If set, we must wait. */
+        unsigned int timeout = 0xFFFFF;
+        while ((SMHC0->STATUS & (1 << 3)) && timeout--) { 
+            /* Spin while FIFO is full */
+        }
+        if (timeout == 0) return -2; // Timeout waiting for space
+
+        /* OPTIMIZATION: Burst Write */
+        /* If FIFO is not full, we assume we can write a small burst safely. */
+        /* The FIFO is deep (usually 128+ words). Writing 16 words is safe. */
+        unsigned int burst_size = 16;
+        unsigned int remaining = total_words - words_written;
+        unsigned int to_write = (remaining < burst_size) ? remaining : burst_size;
+
+        for (int i = 0; i < to_write; i++) {
+            SMHC0->FIFO = buf_u32[words_written++];
+        }
+    }
+
+    /* 5. Wait for Data Transfer Complete */
+    unsigned int t = 0xFFFFF;
+    while(t--) {
+        if (SMHC0->RINTSTS & SMHC_RINT_DATA_DONE) break;
+        if (SMHC0->RINTSTS & SMHC_RINT_ERR_MASK) return -3;
+    }
+    SMHC0->RINTSTS = 0xFFFFFFFF; // Clear interrupts
+
+    /* 6. Wait for Card Busy (Programming Flash) */
+    /* Status Bit 9 = Card Data Busy. Wait for it to go low. */
+    t = 0xFFFFFF;
+    while ((SMHC0->STATUS & (1 << 9)) && t--) { }
+    if (t == 0) uprintf("[WARN] Write Busy Timeout\r\n");
+
+    /* 7. Send Stop for Multi-block */
+    if (count > 1) {
+        smhc_send_cmd(CMD12, 0, SMHC_CMD_RESP_EXP | SMHC_CMD_CHECK_CRC);
+    }
+
+    return 0;
+}
+#endif
+
 int smhc_write_block(unsigned int sector, void *buffer) {
     return smhc_write_blocks(sector, 1, buffer);
 }
