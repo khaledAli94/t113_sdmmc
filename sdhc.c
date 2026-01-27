@@ -38,7 +38,7 @@ int smhc_send_cmd(unsigned int cmd_idx, unsigned int arg, unsigned int flags) {
     SMHC0->CMDARG = arg;
     
     /* 3. Construct Command Value */
-    unsigned int cmd_val = SMHC_CMD_START | (cmd_idx & 0x3F) | flags;
+    unsigned cmd_val = SMHC_CMD_START | (cmd_idx & 0x3F) | flags;
     SMHC0->CMD = cmd_val;
     
     /* 4. Wait for Completion */
