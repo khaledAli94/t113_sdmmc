@@ -311,9 +311,64 @@ int smhc_read_blocks(unsigned int sector, unsigned int count, void *buf) {
 
 #endif 
 
+/* Optimized CPU Read - Ported from U-Boot 'mmc_trans_data_by_cpu' */
+#if 0
+int smhc_read_blocks(unsigned int sector, unsigned int count, void *buf) {
+    unsigned *buf_u32 = (unsigned *)buf;
+    unsigned total_words = 128 * count;
+    unsigned words_read = 0;
+
+    /* 1. FORCE CPU MODE (Reset FIFO first) */
+    SMHC0->CTRL |= SMHC_CTRL_FIFO_RST;
+    while(SMHC0->CTRL & SMHC_CTRL_FIFO_RST);
+
+    unsigned ctrl = SMHC0->CTRL;
+    ctrl |= SMHC_CTRL_FIFO_AC_MOD; /* Set Bit 31 (AHB/CPU Mode) */
+    ctrl &= ~SMHC_CTRL_DMA_ENB;    /* Clear Bit 5 (Disable DMA) */
+    SMHC0->CTRL = ctrl;
+
+    /* 2. Send Command */
+    SMHC0->BLKSIZ = 512;
+    SMHC0->BYTCNT = count * 512;
+    
+    unsigned int cmd = (count > 1) ? CMD18 : CMD17;
+    int ret = smhc_send_cmd(cmd, sector * 512, SMHC_CMD_RESP_EXP | SMHC_CMD_CHECK_CRC | SMHC_CMD_DATA_EXP);
+    if (ret != 0) return ret;
+
+    /* 3. Burst Read Loop */
+    while (words_read < total_words) {
+        unsigned status = SMHC0->STATUS;
+
+        if (SMHC0->RINTSTS & SMHC_RINT_ERR_MASK) return -2;
+
+        /* Check FIFO Level (Bits 17-24) */
+        unsigned available = (status >> 17) & 0xFF;
+
+        /* If level 0, check Empty Bit (Bit 2) */
+        if (available == 0) {
+            if (status & (1 << 2)) continue; /* Empty, spin */
+            available = 1; /* Not empty, at least 1 word */
+        }
+
+        if (words_read + available > total_words) {
+            available = total_words - words_read;
+        }
+
+        /* Unrolled Burst */
+        for (int i = 0; i < available; i++) {
+            buf_u32[words_read++] = SMHC0->FIFO;
+        }
+    }
+
+    if (count > 1) smhc_send_cmd(CMD12, 0, SMHC_CMD_RESP_EXP | SMHC_CMD_CHECK_CRC);
+    SMHC0->RINTSTS = 0xFFFFFFFF;
+    return 0;
+}
+
 int smhc_read_block(unsigned int sector, void *buffer) {
     return smhc_read_blocks(sector, 1, buffer);
 }
+#endif
 
 /* Write Blocks API cpu polling */
 int smhc_write_blocks(unsigned int sector, unsigned int count, void *buf) {
