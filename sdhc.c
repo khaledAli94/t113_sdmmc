@@ -3,6 +3,9 @@
 #include<uart.h>
 #include<ccu.h>
 
+/* 0 = SDSC (Byte Addr), 1 = SDHC/SDXC (Block Addr) */
+static int card_is_high_capacity = 0;
+
 static struct mmc_descriptor_t dma_desc __attribute__((aligned(4)));;
 
 /* Wait for a bit to clear or set */
@@ -87,6 +90,7 @@ int smhc_card_set_width(unsigned int rca, int width) {
     return ret;
 }
 
+
 int smhc_init(void) {
     /* 1. Hardware Init */
     smhc_gpio_init();
@@ -125,11 +129,22 @@ int smhc_init(void) {
     int retries = 2000;
     while (retries--) {
         smhc_send_cmd(CMD55, 0, SMHC_CMD_RESP_EXP | SMHC_CMD_CHECK_CRC);
-
-        /* Arg: 0x40FF8000 -> HCS(Bit 30) | Voltage 3.2-3.4V (Bits 23-8) */
-        smhc_send_cmd(ACMD41, 0x40FF8000, SMHC_CMD_RESP_EXP); /* HCS | Voltage */
-        /* Check Bit 31 (Busy Bit) of Response */
-        if (SMHC0->RESP0 & (1U << 31)) break; /* Ready bit */
+        /* Arg: 0x40... sets HCS bit (High Capacity Support) */
+        smhc_send_cmd(ACMD41, 0x40FF8000, SMHC_CMD_RESP_EXP); 
+        
+        if (SMHC0->RESP0 & (1U << 31)) {
+            /* Card Power Up Complete (Busy bit cleared) */
+            
+            /* CHECK CCS BIT (Bit 30) */
+            if (SMHC0->RESP0 & (1U << 30)) {
+                card_is_high_capacity = 1;
+                uprintf("[SD] High Capacity Card (Block Addressing)\r\n");
+            } else {
+                card_is_high_capacity = 0;
+                uprintf("[SD] Standard Capacity Card (Byte Addressing)\r\n");
+            }
+            break; 
+        }
         volatile int d = 1000; while(d--);
     }
     
@@ -314,9 +329,17 @@ int smhc_read_blocks(unsigned int sector, unsigned int count, void *buf) {
 /* Optimized CPU Read - Ported from U-Boot 'mmc_trans_data_by_cpu' */
 #if 0
 int smhc_read_blocks(unsigned int sector, unsigned int count, void *buf) {
+    
     unsigned *buf_u32 = (unsigned *)buf;
     unsigned total_words = 128 * count;
     unsigned words_read = 0;
+
+    /* --- FIX: Handle Addressing Mode --- */
+    unsigned int arg = sector;
+    if (card_is_high_capacity == 0) {
+        arg = sector * 512; /* Byte Addressing for SDSC */
+    }
+    /* ----------------------------------- */
 
     /* 1. FORCE CPU MODE (Reset FIFO first) */
     SMHC0->CTRL |= SMHC_CTRL_FIFO_RST;
@@ -332,7 +355,9 @@ int smhc_read_blocks(unsigned int sector, unsigned int count, void *buf) {
     SMHC0->BYTCNT = count * 512;
     
     unsigned int cmd = (count > 1) ? CMD18 : CMD17;
-    int ret = smhc_send_cmd(cmd, sector * 512, SMHC_CMD_RESP_EXP | SMHC_CMD_CHECK_CRC | SMHC_CMD_DATA_EXP);
+
+    /* Use calculated 'arg' here instead of 'sector * 512' */
+    int ret = smhc_send_cmd(cmd, arg, SMHC_CMD_RESP_EXP | SMHC_CMD_CHECK_CRC | SMHC_CMD_DATA_EXP);
     if (ret != 0) return ret;
 
     /* 3. Burst Read Loop */
