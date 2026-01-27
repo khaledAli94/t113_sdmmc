@@ -240,7 +240,7 @@ int smhc_read_blocks(unsigned int sector, unsigned int count, void *buffer) {
 }
 #endif
 
-/* Adapted from Allwinner H3 Working Driver (cpu polling) */
+/* Adapted from h3 Working Driver (cpu polling) */
 #if 1
 /* Matches signature in sdhc.h: (sector, count, buf) */
 int smhc_read_blocks(unsigned int sector, unsigned int count, void *buf) {
